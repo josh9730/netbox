@@ -2,16 +2,25 @@ from typing import Final, TypeAlias
 
 from dcim.choices import CableTypeChoices, LinkStatusChoices
 from dcim.models import Cable, Device, DeviceRole, FrontPort, Interface, RearPort, Site
-from extras.scripts import ChoiceVar, ObjectVar, Script, StringVar
+from extras.models import Tag
+from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
 from utilities.exceptions import AbortScript
 
 name = "Jumper Creations"
 
 Ports: TypeAlias = FrontPort | Interface | RearPort
 
+PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
+MODULAR_TAG: Final = "Modular Trunk"
+MODULAR_TAG_ID: Final = Tag.objects.get(slug="modular-trunk").id
+
+
+def wrap_save(obj) -> None:
+    obj.full_clean()
+    obj.save()
+
 
 class CableRunner:
-    PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
     rack_1_free_modular_ports: list[FrontPort]
     rack_2_free_modular_ports: list[FrontPort]
     connections: list[list[Ports]]
@@ -37,6 +46,7 @@ class CableRunner:
         clr: str,
         status: LinkStatusChoices = LinkStatusChoices.STATUS_CONNECTED,
         cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF_OS2,
+        length: int = 0,
     ) -> Cable:
         cable = Cable(
             type=cable_type,
@@ -44,18 +54,36 @@ class CableRunner:
             b_terminations=[port_2],
             status=status,
             label=clr,
+            length=length,
+            length_unit="m",
         )
-        cable.full_clean()
-        cable.save()
+        wrap_save(cable)
         return cable
+
+    @staticmethod
+    def create_cable_log(cable: Cable) -> str:
+        # fmt: off
+        return (
+            f"""Created Cable  
+                **Site**: `{cable.a_terminations[0].device.site}`  
+                **A Rack**: `{cable.a_terminations[0].device.rack}`  
+                **A Device**: `{cable.a_terminations[0].device}`  
+                **A Port**: `{cable.a_terminations[0].name}`  
+                **Label**: `{cable.label}`  
+                **Z Rack**: `{cable.b_terminations[0].device.rack}`  
+                **Z Device**: `{cable.b_terminations[0].device}`  
+                **Z Port**: `{cable.b_terminations[0].name}`  
+                """
+        )
+        # fmt: on
 
     def _find_free_local_ports(self) -> None:
         """Get all free modular panel ports for each rack."""
         self.rack_1_free_modular_ports = list(
-            FrontPort.objects.filter(device__role=self.PANEL_ROLE, device__rack=self.rack_1, cable=None)
+            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_1, cable=None)
         )
         self.rack_2_free_modular_ports = list(
-            FrontPort.objects.filter(device__role=self.PANEL_ROLE, device__rack=self.rack_2, cable=None)
+            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_2, cable=None)
         )
         if not all((self.rack_1_free_modular_ports, self.rack_1_free_modular_ports)):
             raise AbortScript("No free modular panel ports found between the selected racks.")
@@ -144,77 +172,31 @@ class CableRunner:
 
 class FormFields:
     port_description = "One of {}-Side Interface, FrontPort, or RearPort must be selected."
-    site = ObjectVar(
-        model=Site,
-    )
-    a_device = ObjectVar(
-        model=Device,
-        label="A-Device",
-        query_params={"site_id": "$site"},
-    )
-    a_interface = ObjectVar(
-        model=Interface,
-        label="A-Interface",
-        description=port_description.format("A"),
-        required=False,
-        query_params={"device_id": "$a_device", "cabled": False},
-    )
-    a_frontport = ObjectVar(
-        model=FrontPort,
-        label="A-FrontPort/Optical Client",
-        description=port_description.format("A"),
-        required=False,
-        query_params={"device_id": "$a_device", "cabled": False},
-    )
-    a_rearport = ObjectVar(
-        model=RearPort,
-        label="A-RearPort/Optical Trunk",
-        description=port_description.format("A"),
-        required=False,
-        query_params={"device_id": "$a_device", "cabled": False},
-    )
+    site = ObjectVar(model=Site)
 
-    z_device = ObjectVar(
-        model=Device,
-        label="Z-Device",
-        query_params={"site_id": "$site"},
-    )
-    z_interface = ObjectVar(
-        model=Interface,
-        label="Z-Interface",
-        description=port_description.format("Z"),
-        required=False,
-        query_params={"device_id": "$z_device", "cabled": False},
-    )
-    z_frontport = ObjectVar(
-        model=FrontPort,
-        label="Z-FrontPort|Optical",
-        description=port_description.format("Z"),
-        required=False,
-        query_params={"device_id": "$z_device", "cabled": False},
-    )
-    z_rearport = ObjectVar(
-        model=RearPort,
-        label="Z-RearPort/Optical Trunk",
-        description=port_description.format("A"),
-        required=False,
-        query_params={"device_id": "$z_device", "cabled": False},
-    )
+    a_device = ObjectVar(model=Device, label="A-Device", query_params={"site_id": "$site"})
+    a_dev_common = {
+        "description": port_description.format("A"),
+        "required": False,
+        "query_params": {"device_id": "$a_device", "cabled": False},
+    }
+    a_interface = ObjectVar(model=Interface, label="A-Interface", **a_dev_common)
+    a_frontport = ObjectVar(model=FrontPort, label="A-FrontPort/Optical Client", **a_dev_common)
+    a_rearport = ObjectVar(model=RearPort, label="A-RearPort/Optical Trunk", **a_dev_common)
 
-    status = ChoiceVar(
-        label="Cable Status",
-        choices=LinkStatusChoices,
-        default=LinkStatusChoices.STATUS_CONNECTED,
-    )
-    clr = StringVar(
-        label="CLR",
-        description="Value should match `CLR-XXXX` or `nonprod STRING`.",
-    )
-    cable_type = ChoiceVar(
-        label="Cable Type",
-        choices=CableTypeChoices,
-        default=CableTypeChoices.TYPE_SMF_OS2,
-    )
+    z_device = ObjectVar(model=Device, label="Z-Device", query_params={"site_id": "$site"})
+    z_dev_common = {
+        "description": port_description.format("Z"),
+        "required": False,
+        "query_params": {"device_id": "$z_device", "cabled": False},
+    }
+    z_interface = ObjectVar(model=Interface, label="Z-Interface", **z_dev_common)
+    z_frontport = ObjectVar(model=FrontPort, label="Z-FrontPort|Optical", **z_dev_common)
+    z_rearport = ObjectVar(model=RearPort, label="Z-RearPort/Optical Trunk", **z_dev_common)
+
+    status = ChoiceVar(label="Cable Status", choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED)
+    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.")
+    cable_type = ChoiceVar(label="Cable Type", choices=CableTypeChoices, default=CableTypeChoices.TYPE_SMF_OS2)
 
 
 class NewJumper(Script):
@@ -253,22 +235,6 @@ class NewJumper(Script):
             z_port = check_pairs(data["z_interface"], data["z_frontport"], data["a_rearport"], "Z")
             return a_port, z_port
 
-        def create_cable_log(data, cable: Cable) -> None:
-            # fmt: off
-            self.log_success(
-                f"""Created Cable  
-                    **Site**: `{data['site']}`  
-                    **A Rack**: `{data['a_device'].rack}`  
-                    **A Device**: `{cable.a_terminations[0].device}`  
-                    **A Port**: `{cable.a_terminations[0].name}`  
-                    **Label**: `{cable.label}`  
-                    **Z Rack**: `{data['z_device'].rack}`  
-                    **Z Device**: `{cable.b_terminations[0].device}`  
-                    **Z Port**: `{cable.b_terminations[0].name}`  
-                    """
-            )
-            # fmt: on
-
         rack_1_port, rack_2_port = check_port_selections(data)
 
         # Intra-rack connection
@@ -280,7 +246,8 @@ class NewJumper(Script):
                 data["status"],
                 data["cable_type"],
             )
-            create_cable_log(data, cable)
+            output = CableRunner.create_cable_log(cable)
+            self.log_success(output)
 
         # Inter-rack connection
         else:
@@ -294,4 +261,67 @@ class NewJumper(Script):
             runner.get_connections()
             cables = runner.create_cables()
             for cable in cables:
-                create_cable_log(data, cable)
+                output = CableRunner.create_cable_log(cable)
+                self.log_success(output)
+
+
+class CreatePanelTrunks(Script):
+    class Meta:
+        name = "FHD Trunk Creation"
+        description = "Create trunk cables between two modular panels."
+        scheduling_enabled = False
+
+    site = ObjectVar(label="Site Name", model=Site)
+    panel_1 = ObjectVar(
+        label="Modular Panel",
+        description="Select one of the paired panels",
+        model=Device,
+        query_params={"rack_id": "$rack_1", "role_id": PANEL_ROLE.id},
+    )
+    rp_1 = ObjectVar(
+        label="Rear Port",
+        description="Select the RearPort",
+        model=RearPort,
+        query_params={"device_id": "$panel_1", "cabled": False},
+    )
+    length = IntegerVar(
+        label="Cable Length", description="Cable length, in meters", required=False, max_value=100, min_value=1
+    )
+    status = ChoiceVar(
+        label="Cable Status", required=False, choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED
+    )
+
+    def run(self, data, commit):
+        def get_remote_panel(panel: Device) -> Device:
+            """Return remote_panel Device."""
+            remote_panel_id = panel.custom_field_data["remote_panel"]
+            return Device.objects.get(id=remote_panel_id)
+
+        def next_cable_id() -> str:
+            """Retrieve all modular trunk cables by Tag, and return the next label ID.
+
+            All modular trunk cables are expected to be tagged with the modular-trunk tag. All labels
+            matching this tag are retrieved and sorted, then the next ID is returned using rjust.
+            """
+            cables = Cable.objects.filter(tags=MODULAR_TAG_ID)
+            try:
+                last_cable_label = sorted([i.label.split("--")[-1] for i in cables])[-1]
+            except IndexError:
+                return "C0001"
+            else:
+                last_id = last_cable_label[1:]
+                return "C" + str(int(last_id) + 1).rjust(4, "0")
+
+        panel_2 = get_remote_panel(data["panel_1"])
+        panel_2_port = panel_2.rearports.get(name=data["rp_1"].name)
+
+        cable_id = next_cable_id()
+        cable = CableRunner.create_cable_single(
+            data["rp_1"],
+            panel_2_port,
+            f"COM--{data['panel_1']}--{panel_2}--{cable_id}",
+            data["status"],
+        )
+        cable.tags.add(MODULAR_TAG)
+        output = CableRunner.create_cable_log(cable)
+        self.log_success(output)
