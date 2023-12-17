@@ -177,7 +177,7 @@ class CableRunner:
 
 class NewJumper(Script):
     class Meta:
-        name = "Create Jumpers"
+        name = "New Jumpers"
         description = (
             "Create new cabling between two endpoints within one rack, or between two racks using modular paneling."
         )
@@ -262,7 +262,7 @@ class NewJumper(Script):
 
 class CreatePanelTrunks(Script):
     class Meta:
-        name = "FHD Trunk Creation"
+        name = "New FHD Trunk"
         description = "Create trunk cables between two modular panels."
         scheduling_enabled = False
 
