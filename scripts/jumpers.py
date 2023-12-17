@@ -1,9 +1,12 @@
 from typing import Final, TypeAlias
 
+from circuits.choices import CircuitStatusChoices
+from circuits.models import Circuit, CircuitTermination, CircuitType, Provider
 from dcim.choices import CableTypeChoices, LinkStatusChoices
-from dcim.models import Cable, Device, DeviceRole, FrontPort, Interface, RearPort, Site
+from dcim.models import Cable, Device, DeviceRole, FrontPort, Interface, Rack, RearPort, Site
 from extras.models import Tag
 from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
+from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
 
 name = "Jumper Creations"
@@ -13,6 +16,8 @@ Ports: TypeAlias = FrontPort | Interface | RearPort
 PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
 MODULAR_TAG: Final = "Modular Trunk"
 MODULAR_TAG_ID: Final = Tag.objects.get(slug="modular-trunk").id
+XCONNECT_ROLE: Final = "xconnect-panels"
+CROSS_CONNECT: Final = "Cross Connect"
 
 
 def wrap_save(obj) -> None:
@@ -170,35 +175,6 @@ class CableRunner:
         return cables
 
 
-class FormFields:
-    port_description = "One of {}-Side Interface, FrontPort, or RearPort must be selected."
-    site = ObjectVar(model=Site)
-
-    a_device = ObjectVar(model=Device, label="A-Device", query_params={"site_id": "$site"})
-    a_dev_common = {
-        "description": port_description.format("A"),
-        "required": False,
-        "query_params": {"device_id": "$a_device", "cabled": False},
-    }
-    a_interface = ObjectVar(model=Interface, label="A-Interface", **a_dev_common)
-    a_frontport = ObjectVar(model=FrontPort, label="A-FrontPort/Optical Client", **a_dev_common)
-    a_rearport = ObjectVar(model=RearPort, label="A-RearPort/Optical Trunk", **a_dev_common)
-
-    z_device = ObjectVar(model=Device, label="Z-Device", query_params={"site_id": "$site"})
-    z_dev_common = {
-        "description": port_description.format("Z"),
-        "required": False,
-        "query_params": {"device_id": "$z_device", "cabled": False},
-    }
-    z_interface = ObjectVar(model=Interface, label="Z-Interface", **z_dev_common)
-    z_frontport = ObjectVar(model=FrontPort, label="Z-FrontPort|Optical", **z_dev_common)
-    z_rearport = ObjectVar(model=RearPort, label="Z-RearPort/Optical Trunk", **z_dev_common)
-
-    status = ChoiceVar(label="Cable Status", choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED)
-    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.")
-    cable_type = ChoiceVar(label="Cable Type", choices=CableTypeChoices, default=CableTypeChoices.TYPE_SMF_OS2)
-
-
 class NewJumper(Script):
     class Meta:
         name = "Create Jumpers"
@@ -206,19 +182,38 @@ class NewJumper(Script):
             "Create new cabling between two endpoints within one rack, or between two racks using modular paneling."
         )
         scheduling_enabled = False
+        fieldsets = (
+            ("Cable Data", ("site", "status", "clr", "cable_type")),
+            ("A Side", ("a_device", "a_interface", "a_frontport", "a_rearport")),
+            ("Z Side", ("z_device", "z_interface", "z_frontport", "z_rearport")),
+        )
 
-    site = FormFields.site
-    a_device = FormFields.a_device
-    a_interface = FormFields.a_interface
-    a_frontport = FormFields.a_frontport
-    a_rearport = FormFields.a_rearport
-    z_device = FormFields.z_device
-    z_interface = FormFields.z_interface
-    z_frontport = FormFields.z_frontport
-    z_rearport = FormFields.z_rearport
-    status = FormFields.status
-    clr = FormFields.clr
-    cable_type = FormFields.cable_type
+    port_description = "One of Interface, FrontPort, or RearPort must be selected."
+    site = ObjectVar(model=Site)
+
+    a_device = ObjectVar(model=Device, label="Device", query_params={"site_id": "$site"})
+    a_dev_common = {
+        "description": port_description,
+        "required": False,
+        "query_params": {"device_id": "$a_device", "cabled": False},
+    }
+    a_interface = ObjectVar(model=Interface, label="Interface", **a_dev_common)
+    a_frontport = ObjectVar(model=FrontPort, label="FrontPort/Optical Client", **a_dev_common)
+    a_rearport = ObjectVar(model=RearPort, label="RearPort/Optical Trunk", **a_dev_common)
+
+    z_device = ObjectVar(model=Device, label="Device", query_params={"site_id": "$site"})
+    z_dev_common = {
+        "description": port_description.format,
+        "required": False,
+        "query_params": {"device_id": "$z_device", "cabled": False},
+    }
+    z_interface = ObjectVar(model=Interface, label="Interface", **z_dev_common)
+    z_frontport = ObjectVar(model=FrontPort, label="FrontPort|Optical", **z_dev_common)
+    z_rearport = ObjectVar(model=RearPort, label="RearPort/Optical Trunk", **z_dev_common)
+
+    status = ChoiceVar(label="Cable Status", choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED)
+    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.")
+    cable_type = ChoiceVar(label="Cable Type", choices=CableTypeChoices, default=CableTypeChoices.TYPE_SMF_OS2)
 
     def run(self, data, commit):
         def check_port_selections(data: dict) -> tuple[Ports, Ports]:
@@ -325,3 +320,123 @@ class CreatePanelTrunks(Script):
         cable.tags.add(MODULAR_TAG)
         output = CableRunner.create_cable_log(cable)
         self.log_success(output)
+
+
+class NewCrossConnect(Script):
+    class Meta:
+        name = "New Cross Connect"
+        description = "Create a new Cross Connect object and terminate to panel"
+        scheduling_enabled = False
+        fieldsets = (
+            (
+                "Cross Connect",
+                ("provider", "circuit_id", "circuit_billing", "tenant", "ticket", "description", "status"),
+            ),
+            ("Panel Termination", ("site", "xconnect_panel", "xcpanel_port", "clr")),
+        )
+
+    site = ObjectVar(model=Site)
+    provider = ObjectVar(label="Cross Connect Provider", model=Provider)
+    circuit_id = StringVar(label="Cross Connect ID", description="Cross Connect Serial/Order ID, or ticket")
+    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.")
+    ticket = StringVar()
+    status = ChoiceVar(choices=CircuitStatusChoices, default=CircuitStatusChoices.STATUS_PLANNED)
+    tenant = ObjectVar(label="Segment", model=Tenant)
+
+    circuit_billing = StringVar(label="Billing/Order ID", required=False)
+    description = StringVar(label="Description")
+    xconnect_panel = ObjectVar(
+        label="Cross Connect Panel", model=Device, query_params={"site_id": "$site", "role": XCONNECT_ROLE}
+    )
+    xcpanel_port = ObjectVar(
+        label="Cross Connect Rear Port", model=RearPort, query_params={"device_id": "$xconnect_panel", "cabled": False}
+    )
+
+    def run(self, data, commit):
+        def check_empty_frontport(rp: RearPort) -> None:
+            """Check if the FrontPort for the given RearPort is in use.
+
+            Note that the CLRs may not match, so there's no real way to enforce anything.
+            """
+            fp = FrontPort.objects.filter(rear_port=rp)[0]  # only one FP per RP for this panel type
+            if fp.cable:
+                self.log_warning(f"The selected RearPort is being used for `{fp.cable}`. Verify that this is expected!")
+
+        def get_rack_info(rack: Rack) -> tuple[str, str]:
+            """Fetch Cage/Suite name if present."""
+            row = rack.location
+            cage = row.parent.name if row.parent else ""
+            rack_cf = rack.custom_field_data
+
+            if rack.facility_id:
+                rack_id = rack.facility_id
+                rack_id += f"/ {rack_cf['billing_id']}" if rack_cf.get("billing_id") else ""
+                rack_id += f"/ {rack_cf['space_id']}" if rack_cf.get("space_id") else ""
+            else:
+                rack_id = rack.name
+
+            return cage, rack_id
+
+        def panel_type(panel_type: str) -> str:
+            """Find valid cable_type from end of the device_type slug."""
+            match panel_type:
+                case "os2":
+                    return "smf-os2"
+                case "om4":
+                    return "mmf-om4"
+
+        def xconnect_log(data: dict, cage: str, rack_identifier: str, cable_type: str) -> str:
+            # fmt: off
+            return (
+                f"""Created Cable  
+                    **Site**: `{data['site']}`  
+                    **Cage**: `{cage}`  
+                    **Rack**: `{rack_identifier}`  
+                    **Device**: `{data['xconnect_panel']}`  
+                    **Port**: `{data['xcpanel_port']}`  
+                    **Port Type**: `{data['xcpanel_port'].type.upper()}`  
+                    **Cable Type**: `{cable_type}`  
+                    """
+            )
+            # fmt: on
+
+        check_empty_frontport(data["xcpanel_port"])
+
+        circuit = Circuit(
+            cid=data["circuit_id"],
+            provider=data["provider"],
+            type=CircuitType.objects.get(name=CROSS_CONNECT),
+            status=data["status"],
+            description=data["description"],
+            custom_field_data={
+                "circuit_ticket": data["ticket"],
+                "circuit_billing": data.get("circuit_billing"),
+            },
+            tenant=data["tenant"],
+        )
+        wrap_save(circuit)
+
+        circuit_term = CircuitTermination(
+            circuit=circuit,
+            term_side="A",
+            site=data["site"],
+            xconnect_id=data["circuit_id"],
+            pp_info=f'Panel: {data["xconnect_panel"]}, Port: {data["xcpanel_port"]}',
+            description=data["description"],
+        )
+        wrap_save(circuit_term)
+
+        cable_type = panel_type(data["xconnect_panel"].device_type.slug.split("-")[-1])
+        self.log_info(cable_type)
+
+        _ = CableRunner.create_cable_single(
+            data["xcpanel_port"],
+            circuit_term,
+            data["clr"],
+            data["status"],
+            cable_type,
+        )
+
+        cage, rack_id = get_rack_info(data["xconnect_panel"].rack)
+        xconn_log = xconnect_log(data, cage, rack_id, cable_type)
+        self.log_success(xconn_log)

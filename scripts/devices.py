@@ -1,7 +1,7 @@
 from typing import Final
 
 from dcim.choices import DeviceStatusChoices
-from dcim.models import Device, DeviceRole, DeviceType, Rack, Site
+from dcim.models import Device, DeviceRole, DeviceType, ModuleBay, Rack, Site
 from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
 from tenancy.models import Tenant
 
@@ -29,6 +29,8 @@ OPTICAL_ROLES: Final = [
 HUBSITE_TENANT: Final = Tenant.objects.get(name="CENIC Hubsite")
 ENCLOSURE: Final = DeviceType.objects.get(model="FHD Enclosure, Blank")
 PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
+XCONNECT_PANEL: Final = "48-port-lc-lc-"
+XCONNECT_ROLE: Final = "xconnect-panels"
 
 
 def wrap_save(obj) -> None:
@@ -232,12 +234,6 @@ class CreatePanels(Script):
     rack_1_position = IntegerVar(
         label="Rack A Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
     )
-
-    # how to filter for available RUs?
-    # r1_ru = Rack.objects.get(id="$rack_1").get_rack_units()
-    # avail_u = [(i['name'], i['name']) for i in r1_ru if not i['occupied']]
-    # rack_choices = ChoiceVar(choices=avail_u)
-
     rack_2 = ObjectVar(label="Rack B", model=Rack, query_params={"site_id": "$site"})
     rack_2_position = IntegerVar(
         label="Rack B Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
@@ -252,12 +248,19 @@ class CreatePanels(Script):
             """If any rack is the Hub, then the panel names are HUB-/SPK-. Else, names are SS-."""
             return True if any((rack_1.custom_field_data["hub_rack"], rack_2.custom_field_data["hub_rack"])) else False
 
-        def create_remote_panel_field(panels: list) -> None:
+        def create_remote_panel_field(panels: list[Device]) -> None:
             """Create link between the new panels using the remote_panel custom field."""
             panels[0].custom_field_data["remote_panel"] = panels[1].id
             panels[1].custom_field_data["remote_panel"] = panels[0].id
             wrap_save(panels[0])
             wrap_save(panels[1])
+
+        def create_module_bays(panels: list[Device]) -> None:
+            """Create ModuleBays, due to bug when assigning remote_panel link, which makes modules un-viewable."""
+            for panel in panels:
+                for i in range(1, 5):
+                    mod = ModuleBay(device=panel, position=i, name=f"Slot {i}")
+                    wrap_save(mod)
 
         hub_spoke = hub_spoke_check(data["rack_1"], data["rack_2"])
 
@@ -290,3 +293,39 @@ class CreatePanels(Script):
 
         create_remote_panel_field(panels)
         self.log_success("Created `Remote Panel` link between the new panels.")
+
+        create_module_bays(panels)
+        self.log_success("Created (4) ModuleBays in each panel, for adding FHD cassettes.")
+
+
+class NewXConnect(Script):
+    class Meta:
+        name = "New Cross Connect Panel"
+        description = "Create a new 48-port Cross Connect Panel"
+        scheduling_enabled = False
+
+    site = ObjectVar(model=Site)
+    rack = ObjectVar(model=Rack, query_params={"site_id": "$site"})
+    position = IntegerVar(
+        label="Rack Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
+    )
+    TYPE_CHOICES = (("os2", "Single-mode"), ("om4", "Multi-mode"))
+    cable_type = ChoiceVar(label="Cable Type", choices=TYPE_CHOICES, default="smf")
+    status = ChoiceVar(label="Install Status", choices=DeviceStatusChoices, default=DeviceStatusChoices.STATUS_ACTIVE)
+    ticket = StringVar(label="Deployment Ticket")
+
+    def run(self, data, commit):
+        panel_name = f"XCP-{data['site']}-{data['rack']}-U{str(data['position']).rjust(2, '0')}"
+        panel = Device(
+            site=data["site"],
+            rack=data["rack"],
+            position=data["position"],
+            face="front",
+            device_type=DeviceType.objects.get(slug=f"{XCONNECT_PANEL}{data['cable_type']}"),
+            device_role=XCONNECT_ROLE,
+            name=panel_name,
+            tenant=HUBSITE_TENANT,
+            custom_field_data={"deployment_ticket": data["ticket"]},
+        )
+        wrap_save(panel)
+        self.log_success(f"Created cross connect panel `{panel}`.")
