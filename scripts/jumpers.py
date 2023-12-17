@@ -26,6 +26,8 @@ def wrap_save(obj) -> None:
 
 
 class CableRunner:
+    """Create 1-3 cables between two devices."""
+
     rack_1_free_modular_ports: list[FrontPort]
     rack_2_free_modular_ports: list[FrontPort]
     connections: list[list[Ports]]
@@ -168,6 +170,7 @@ class CableRunner:
             ]
 
     def create_cables(self) -> list[Cable]:
+        """Wrapper to create multiple cables based on the connection list."""
         cables = []
         for connection in self.connections:
             self.data.update({"port_1": connection[0], "port_2": connection[1]})
@@ -217,7 +220,7 @@ class NewJumper(Script):
 
     def run(self, data, commit):
         def check_port_selections(data: dict) -> tuple[Ports, Ports]:
-            """Only one of Interface/FrontPort should be selected for A and Z Side."""
+            """Only one of Interface/FrontPort/RearPort should be selected for A and Z Side."""
 
             def check_pairs(port_1: ObjectVar, port_2: ObjectVar, port_3: ObjectVar, side: str) -> Ports:
                 msg = "Select **one** of `{} FrontPort / Interface | RearPort`."
@@ -388,7 +391,7 @@ class NewCrossConnect(Script):
         def xconnect_log(data: dict, cage: str, rack_identifier: str, cable_type: str) -> str:
             # fmt: off
             return (
-                f"""Created Cable  
+                f"""Cross Connect Handoff Info:  
                     **Site**: `{data['site']}`  
                     **Cage**: `{cage}`  
                     **Rack**: `{rack_identifier}`  
@@ -427,7 +430,6 @@ class NewCrossConnect(Script):
         wrap_save(circuit_term)
 
         cable_type = panel_type(data["xconnect_panel"].device_type.slug.split("-")[-1])
-        self.log_info(cable_type)
 
         _ = CableRunner.create_cable_single(
             data["xcpanel_port"],
@@ -436,6 +438,7 @@ class NewCrossConnect(Script):
             data["status"],
             cable_type,
         )
+        self.log_success(cable_type)
 
         cage, rack_id = get_rack_info(data["xconnect_panel"].rack)
         xconn_log = xconnect_log(data, cage, rack_id, cable_type)

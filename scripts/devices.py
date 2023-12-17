@@ -228,15 +228,20 @@ class CreatePanels(Script):
         name = "New Modular Panels"
         description = "Create pair of FHD panels (no cassettes)"
         scheduling_enabled = False
+        fieldsets = (
+            ("Installation", ("site", "status", "ticket")),
+            ("A Panel", ("rack_1", "rack_1_position")),
+            ("Z Panel", ("rack_2", "rack_2_position")),
+        )
 
     site = ObjectVar(label="Site Name", model=Site)
-    rack_1 = ObjectVar(label="Rack A", model=Rack, query_params={"site_id": "$site"})
+    rack_1 = ObjectVar(label="Rack", model=Rack, query_params={"site_id": "$site"})
     rack_1_position = IntegerVar(
-        label="Rack A Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
+        label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
     )
-    rack_2 = ObjectVar(label="Rack B", model=Rack, query_params={"site_id": "$site"})
+    rack_2 = ObjectVar(label="Rack", model=Rack, query_params={"site_id": "$site"})
     rack_2_position = IntegerVar(
-        label="Rack B Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
+        label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
     )
     status = ChoiceVar(
         label="Install Status", required=False, choices=DeviceStatusChoices, default=DeviceStatusChoices.STATUS_ACTIVE
