@@ -1,9 +1,12 @@
 from typing import Final
 
-from dcim.choices import DeviceStatusChoices
-from dcim.models import Device, DeviceRole, DeviceType, ModuleBay, Rack, Site
-from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
+from dcim.choices import DeviceStatusChoices, LinkStatusChoices
+from dcim.models import Device, DeviceRole, DeviceType, Module, ModuleBay, ModuleType, Rack, RearPort, Site
+from extras.scripts import BooleanVar, ChoiceVar, IntegerVar, MultiChoiceVar, ObjectVar, Script, StringVar
 from tenancy.models import Tenant
+from utilities.exceptions import AbortScript
+
+from scripts.common import utils
 
 name = "Devices"
 
@@ -30,12 +33,9 @@ HUBSITE_TENANT: Final = Tenant.objects.get(name="CENIC Hubsite")
 ENCLOSURE: Final = DeviceType.objects.get(model="FHD Enclosure, Blank")
 PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
 XCONNECT_PANEL: Final = "48-port-lc-lc-"
-XCONNECT_ROLE: Final = "xconnect-panels"
-
-
-def wrap_save(obj) -> None:
-    obj.full_clean()
-    obj.save()
+XCONNECT_ROLE: Final = DeviceRole.objects.get(slug="xconnect-panels")
+CASSETTE_TYPE_A_MODULE: Final = ModuleType.objects.get(model="FHD MPO-24/LC OS2 Cassette Type A")
+CASSETTE_TYPE_AF_MODULE: Final = ModuleType.objects.get(model="FHD MPO-24/LC OS2 Cassette Type AF")
 
 
 def non_panel_types() -> list[DeviceType]:
@@ -207,17 +207,17 @@ class NewDevice(Script):
             tenant=data["tenant"],
             custom_field_data={"deployment_ticket": data["ticket"]},
         )
-        wrap_save(device)
+        utils.wrap_save(device)
 
         self.log_success(
             # fmt: off
-            f"""Created new device {device.name} with the following attributes:  
-                **Site**: `{device.site.name}`  
-                **Rack**: `{device.rack.name}`  
-                **Device Type**: `{device.device_type.model}`  
-                **Device Role**: `{device.device_role.name}`  
-                **Tenant**: `{device.tenant.name}`  
-                **Status**: `{device.status}`  
+            f"""Created new device {device.name} with the following attributes:
+                **Site**: `{device.site.name}`
+                **Rack**: `{device.rack.name}`
+                **Device Type**: `{device.device_type.model}`
+                **Device Role**: `{device.device_role.name}`
+                **Tenant**: `{device.tenant.name}`
+                **Status**: `{device.status}`
             """
             # fmt: on
         )
@@ -232,9 +232,15 @@ class CreatePanels(Script):
             ("Installation", ("site", "status", "ticket")),
             ("A Panel", ("rack_1", "rack_1_position")),
             ("Z Panel", ("rack_2", "rack_2_position")),
+            ("Cassettes", ("slots", "type_a", "run_cables", "cable_status")),
         )
 
     site = ObjectVar(label="Site Name", model=Site)
+    status = ChoiceVar(
+        label="Install Status", required=False, choices=DeviceStatusChoices, default=DeviceStatusChoices.STATUS_ACTIVE
+    )
+    ticket = StringVar(label="Deployment Ticket", regex="^((NOC)|(COR)|(SYS)|(NENG)|(DEP))-[0-9]{1,7}$")
+
     rack_1 = ObjectVar(label="Rack", model=Rack, query_params={"site_id": "$site"})
     rack_1_position = IntegerVar(
         label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
@@ -243,56 +249,85 @@ class CreatePanels(Script):
     rack_2_position = IntegerVar(
         label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
     )
-    status = ChoiceVar(
-        label="Install Status", required=False, choices=DeviceStatusChoices, default=DeviceStatusChoices.STATUS_ACTIVE
+
+    slots = MultiChoiceVar(
+        label="Cassettes Installed",
+        description="Optionally, input the slots in which MPO-LC SMF cassettes are installed. This may be done later.",
+        required=False,
+        choices=tuple((i, i) for i in range(1, 5)),
     )
-    ticket = StringVar(label="Deployment Ticket", regex="^((NOC)|(COR)|(SYS)|(NENG)|(DEP))-[0-9]{1,7}$")
+    type_a = ChoiceVar(
+        label="Type A Side",
+        description="Select the side that is using Type A cassettes",
+        required=False,
+        choices=(("1", "A"), ("2", "B")),
+    )
+    run_cables = BooleanVar(
+        label="Run Trunk Cables",
+        description="Optionally, create new trunk cables to connect each of the casssettes. This may be done later.",
+        required=False,
+        default=True,
+    )
+    cable_status = ChoiceVar(
+        label="Cable Status", choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED
+    )
 
     def run(self, data, commit):
-        def hub_spoke_check(rack_1: Rack, rack_2: Rack) -> bool:
-            """If any rack is the Hub, then the panel names are HUB-/SPK-. Else, names are SS-."""
-            return True if any((rack_1.custom_field_data["hub_rack"], rack_2.custom_field_data["hub_rack"])) else False
+        def get_panel_name(data: dict) -> str:
+            def hub_spoke_check(rack_1: Rack, rack_2: Rack) -> bool:
+                """If any rack is the Hub, then the panel names are HUB-/SPK-. Else, names are SS-."""
+                return (
+                    True if any((rack_1.custom_field_data["hub_rack"], rack_2.custom_field_data["hub_rack"])) else False
+                )
+
+            rack_unit = str(data[f"rack_{i}_position"]).rjust(2, "0")
+            panel_name = f'-{data["site"]}-' f'{data[f"rack_{i}"].name.split(" (")[0]}-' f"U{rack_unit}"
+
+            hub_spoke = hub_spoke_check(data["rack_1"], data["rack_2"])
+            if hub_spoke:
+                rack_type = "HUB" if data[f"rack_{i}"].custom_field_data["hub_rack"] else "SPK"
+                return rack_type + panel_name
+            else:
+                return "SS" + panel_name
 
         def create_remote_panel_field(panels: list[Device]) -> None:
             """Create link between the new panels using the remote_panel custom field."""
             panels[0].custom_field_data["remote_panel"] = panels[1].id
             panels[1].custom_field_data["remote_panel"] = panels[0].id
-            wrap_save(panels[0])
-            wrap_save(panels[1])
+            utils.wrap_save(panels[0])
+            utils.wrap_save(panels[1])
 
         def create_module_bays(panels: list[Device]) -> None:
             """Create ModuleBays, due to bug when assigning remote_panel link, which makes modules un-viewable."""
             for panel in panels:
                 for i in range(1, 5):
                     mod = ModuleBay(device=panel, position=i, name=f"Slot {i}")
-                    wrap_save(mod)
+                    utils.wrap_save(mod)
 
-        hub_spoke = hub_spoke_check(data["rack_1"], data["rack_2"])
+        def create_module(panel: Device, slot: int, module: ModuleType) -> Module:
+            module = Module(
+                device=panel,
+                module_bay=ModuleBay.objects.get(name=f"Slot {slot}", device=panel),
+                module_type=module,
+            )
+            utils.wrap_save(module)
+            return module
 
         panels = []
         for i in range(1, 3):
-            rack_unit = str(data[f"rack_{i}_position"]).rjust(2, "0")
-            panel_name = f'-{data["site"]}-' f'{data[f"rack_{i}"].name.split(" (")[0]}-' f"U{rack_unit}"
-
-            if hub_spoke:
-                rack_type = "HUB" if data[f"rack_{i}"].custom_field_data["hub_rack"] else "SPK"
-                panel_name = rack_type + panel_name
-            else:
-                panel_name = "SS" + panel_name
-
             panel = Device(
                 site=data["site"],
                 rack=data[f"rack_{i}"],
-                position=int(rack_unit),
+                position=data[f"rack_{i}_position"],
                 face="front",
                 device_type=ENCLOSURE,
                 device_role=PANEL_ROLE,
-                name=panel_name,
+                name=get_panel_name(data),
                 status=data["status"],
                 tenant=HUBSITE_TENANT,
                 custom_field_data={"deployment_ticket": data["ticket"]},
             )
-            wrap_save(panel)
+            utils.wrap_save(panel)
             panels.append(panel)
             self.log_success(f"Created new panel: `{panel}`.")
 
@@ -301,6 +336,30 @@ class CreatePanels(Script):
 
         create_module_bays(panels)
         self.log_success("Created (4) ModuleBays in each panel, for adding FHD cassettes.")
+
+        if data["slots"]:
+            if not data["type_a"]:
+                raise AbortScript("When adding cassettes, the Type A side must be identified.")
+
+            for slot in data["slots"]:
+                modules = []
+                for panel in panels:
+                    # if panel rack is the rack with Type A cassettes
+                    if data[f"rack_{data['type_a']}"] == panel.rack:
+                        module_type = CASSETTE_TYPE_A_MODULE
+                    else:
+                        module_type = CASSETTE_TYPE_AF_MODULE
+
+                    modules.append(create_module(panel, slot, module_type))
+
+                if data["run_cables"]:
+                    rp_1 = RearPort.objects.get(id=modules[0].rearports.values()[0]["id"])
+                    rp_2 = RearPort.objects.get(id=modules[1].rearports.values()[0]["id"])
+                    utils.create_modular_trunk(modules[0].device, rp_1, modules[1].device, rp_2, data["cable_status"])
+
+            self.log_success(f"Created cassettes in Slot(s) {data['slots']}.")
+            if data["run_cables"]:
+                self.log_success("Created trunk cables between cassettes.")
 
 
 class NewXConnect(Script):
@@ -315,7 +374,7 @@ class NewXConnect(Script):
         label="Rack Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
     )
     TYPE_CHOICES = (("os2", "Single-mode"), ("om4", "Multi-mode"))
-    cable_type = ChoiceVar(label="Cable Type", choices=TYPE_CHOICES, default="smf")
+    cable_type = ChoiceVar(label="Cable Type", choices=TYPE_CHOICES, default="os2")
     status = ChoiceVar(label="Install Status", choices=DeviceStatusChoices, default=DeviceStatusChoices.STATUS_ACTIVE)
     ticket = StringVar(label="Deployment Ticket")
 
@@ -332,5 +391,5 @@ class NewXConnect(Script):
             tenant=HUBSITE_TENANT,
             custom_field_data={"deployment_ticket": data["ticket"]},
         )
-        wrap_save(panel)
+        utils.wrap_save(panel)
         self.log_success(f"Created cross connect panel `{panel}`.")
