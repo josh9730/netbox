@@ -6,7 +6,19 @@ from extras.scripts import BooleanVar, ChoiceVar, IntegerVar, MultiChoiceVar, Ob
 from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
 
-from scripts.common import utils
+from scripts.jumpers import create_modular_trunk
+
+"""
+Customization fields required:
+ - device_class: Device Types must have an appropriate Device Class defined
+ - remote_panel
+ - XCONNECT_PANEL: should have DeviceTypes created that end in os2 or om4
+ - Cassette modules
+ 
+Notes:
+ - Hostnames that are expected to be used in A/AAAA records are all lowercase
+ - Hostnames that are not in DNS are all uppercase
+"""
 
 name = "Devices"
 
@@ -36,6 +48,12 @@ XCONNECT_PANEL: Final = "48-port-lc-lc-"
 XCONNECT_ROLE: Final = DeviceRole.objects.get(slug="xconnect-panels")
 CASSETTE_TYPE_A_MODULE: Final = ModuleType.objects.get(model="FHD MPO-24/LC OS2 Cassette Type A")
 CASSETTE_TYPE_AF_MODULE: Final = ModuleType.objects.get(model="FHD MPO-24/LC OS2 Cassette Type AF")
+
+
+def wrap_save(obj) -> None:
+    """Wrapper for saving new objects."""
+    obj.full_clean()
+    obj.save()
 
 
 def non_panel_types() -> list[DeviceType]:
@@ -207,7 +225,7 @@ class NewDevice(Script):
             tenant=data["tenant"],
             custom_field_data={"deployment_ticket": data["ticket"]},
         )
-        utils.wrap_save(device)
+        wrap_save(device)
 
         self.log_success(
             # fmt: off
@@ -294,15 +312,15 @@ class CreatePanels(Script):
             """Create link between the new panels using the remote_panel custom field."""
             panels[0].custom_field_data["remote_panel"] = panels[1].id
             panels[1].custom_field_data["remote_panel"] = panels[0].id
-            utils.wrap_save(panels[0])
-            utils.wrap_save(panels[1])
+            wrap_save(panels[0])
+            wrap_save(panels[1])
 
         def create_module_bays(panels: list[Device]) -> None:
             """Create ModuleBays, due to bug when assigning remote_panel link, which makes modules un-viewable."""
             for panel in panels:
                 for i in range(1, 5):
                     mod = ModuleBay(device=panel, position=i, name=f"Slot {i}")
-                    utils.wrap_save(mod)
+                    wrap_save(mod)
 
         def create_module(panel: Device, slot: int, module: ModuleType) -> Module:
             module = Module(
@@ -310,7 +328,7 @@ class CreatePanels(Script):
                 module_bay=ModuleBay.objects.get(name=f"Slot {slot}", device=panel),
                 module_type=module,
             )
-            utils.wrap_save(module)
+            wrap_save(module)
             return module
 
         panels = []
@@ -327,7 +345,7 @@ class CreatePanels(Script):
                 tenant=HUBSITE_TENANT,
                 custom_field_data={"deployment_ticket": data["ticket"]},
             )
-            utils.wrap_save(panel)
+            wrap_save(panel)
             panels.append(panel)
             self.log_success(f"Created new panel: `{panel}`.")
 
@@ -355,7 +373,7 @@ class CreatePanels(Script):
                 if data["run_cables"]:
                     rp_1 = RearPort.objects.get(id=modules[0].rearports.values()[0]["id"])
                     rp_2 = RearPort.objects.get(id=modules[1].rearports.values()[0]["id"])
-                    utils.create_modular_trunk(modules[0].device, rp_1, modules[1].device, rp_2, data["cable_status"])
+                    create_modular_trunk(modules[0].device, rp_1, modules[1].device, rp_2, data["cable_status"])
 
             self.log_success(f"Created cassettes in Slot(s) {data['slots']}.")
             if data["run_cables"]:
@@ -391,5 +409,5 @@ class NewXConnect(Script):
             tenant=HUBSITE_TENANT,
             custom_field_data={"deployment_ticket": data["ticket"]},
         )
-        utils.wrap_save(panel)
+        wrap_save(panel)
         self.log_success(f"Created cross connect panel `{panel}`.")

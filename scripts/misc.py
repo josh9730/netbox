@@ -43,15 +43,15 @@ class V4toV6(Script):
             try:
                 return netaddr.IPAddress(v6_str, 6)
             except netaddr.core.AddrFormatError:
-                raise AbortScript('IP address cannot be formatted correctly, please contact an admin.')
+                raise AbortScript("IP address cannot be formatted correctly, please contact an admin.")
 
         test_v4_value(data["v4"])
 
         v6_mask = "128" if data["v4"].prefixlen == 32 else "123"  # /31s are converted to /123s for legacy reasons
 
         v6_ips = []
-        for ipv4 in data['v4'].iter_hosts():
-            v6 = convert_v4(ipv4, data['net'], data["link"])
+        for ipv4 in data["v4"].iter_hosts():
+            v6 = convert_v4(ipv4, data["net"], data["link"])
             v6_ips.append(f"{v6}/{v6_mask}")
         ipv6_str = ", ".join(v6_ips)
 
