@@ -1,8 +1,19 @@
+# VERSION: 1.0
+# temp until NB can access GitLab
+
 from typing import Final
 
 from dcim.choices import DeviceStatusChoices, LinkStatusChoices
 from dcim.models import Device, DeviceRole, DeviceType, Module, ModuleBay, ModuleType, Rack, RearPort, Site
-from extras.scripts import BooleanVar, ChoiceVar, IntegerVar, MultiChoiceVar, ObjectVar, Script, StringVar
+from extras.scripts import (
+    BooleanVar,
+    ChoiceVar,
+    IntegerVar,
+    MultiChoiceVar,
+    ObjectVar,
+    Script,
+    StringVar,
+)
 from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
 
@@ -14,7 +25,7 @@ Customization fields required:
  - remote_panel
  - XCONNECT_PANEL: should have DeviceTypes created that end in os2 or om4
  - Cassette modules
- 
+
 Notes:
  - Hostnames that are expected to be used in A/AAAA records are all lowercase
  - Hostnames that are not in DNS are all uppercase
@@ -261,11 +272,17 @@ class CreatePanels(Script):
 
     rack_1 = ObjectVar(label="Rack", model=Rack, query_params={"site_id": "$site"})
     rack_1_position = IntegerVar(
-        label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
+        label="Position",
+        description="Lowest RU filled by the new panel.",
+        min_value=1,
+        max_value=44,
     )
     rack_2 = ObjectVar(label="Rack", model=Rack, query_params={"site_id": "$site"})
     rack_2_position = IntegerVar(
-        label="Position", description="Lowest RU filled by the new panel.", min_value=1, max_value=44
+        label="Position",
+        description="Lowest RU filled by the new panel.",
+        min_value=1,
+        max_value=44,
     )
 
     slots = MultiChoiceVar(
@@ -309,18 +326,16 @@ class CreatePanels(Script):
                 return "SS" + panel_name
 
         def create_remote_panel_field(panels: list[Device]) -> None:
-            """Create link between the new panels using the remote_panel custom field."""
+            """Create link between the new panels using the remote_panel custom field.
+
+            Fetching the panels again prevents an issue where the new Modules are saved but not visible
+            through the UI, which is caused by calling save() on the created panels too many times.
+            """
+            panels = [Device.objects.get(id=panel.id) for panel in panels]
             panels[0].custom_field_data["remote_panel"] = panels[1].id
             panels[1].custom_field_data["remote_panel"] = panels[0].id
             wrap_save(panels[0])
             wrap_save(panels[1])
-
-        def create_module_bays(panels: list[Device]) -> None:
-            """Create ModuleBays, due to bug when assigning remote_panel link, which makes modules un-viewable."""
-            for panel in panels:
-                for i in range(1, 5):
-                    mod = ModuleBay(device=panel, position=i, name=f"Slot {i}")
-                    wrap_save(mod)
 
         def create_module(panel: Device, slot: int, module: ModuleType) -> Module:
             module = Module(
@@ -349,12 +364,6 @@ class CreatePanels(Script):
             panels.append(panel)
             self.log_success(f"Created new panel: `{panel}`.")
 
-        create_remote_panel_field(panels)
-        self.log_success("Created `Remote Panel` link between the new panels.")
-
-        create_module_bays(panels)
-        self.log_success("Created (4) ModuleBays in each panel, for adding FHD cassettes.")
-
         if data["slots"]:
             if not data["type_a"]:
                 raise AbortScript("When adding cassettes, the Type A side must be identified.")
@@ -378,6 +387,9 @@ class CreatePanels(Script):
             self.log_success(f"Created cassettes in Slot(s) {data['slots']}.")
             if data["run_cables"]:
                 self.log_success("Created trunk cables between cassettes.")
+
+        create_remote_panel_field(panels)
+        self.log_success("Created `Remote Panel` link between the new panels.")
 
 
 class NewXConnect(Script):

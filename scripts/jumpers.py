@@ -1,3 +1,6 @@
+# VERSION: 1.0
+# temp until NB can access GitLab
+
 from typing import Final, TypeAlias
 
 from circuits.choices import CircuitStatusChoices
@@ -12,8 +15,10 @@ from utilities.exceptions import AbortScript
 """
 Customization fields required:
   - Tag for all modular trunks
-  - 
+  -
 """
+
+name = "Jumper Creations"
 
 Ports: TypeAlias = FrontPort | Interface | RearPort
 
@@ -22,8 +27,6 @@ MODULAR_TAG: Final = "Modular Trunk"
 MODULAR_TAG_ID: Final = Tag.objects.get(slug="modular-trunk").id
 XCONNECT_ROLE: Final = "xconnect-panels"
 CROSS_CONNECT: Final = "Cross Connect"
-
-name = "Jumper Creations"
 
 
 def wrap_save(obj) -> None:
