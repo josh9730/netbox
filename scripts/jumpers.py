@@ -6,7 +6,16 @@ from typing import Final, TypeAlias
 from circuits.choices import CircuitStatusChoices
 from circuits.models import Circuit, CircuitTermination, CircuitType, Provider
 from dcim.choices import CableTypeChoices, LinkStatusChoices
-from dcim.models import Cable, Device, DeviceRole, FrontPort, Interface, Rack, RearPort, Site
+from dcim.models import (
+    Cable,
+    Device,
+    DeviceRole,
+    FrontPort,
+    Interface,
+    Rack,
+    RearPort,
+    Site,
+)
 from extras.models import Tag
 from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
 from tenancy.models import Tenant
@@ -36,8 +45,17 @@ def wrap_save(obj) -> None:
 
 
 def create_modular_trunk(
-    panel_1: Device, port_1: Ports, panel_2: Device, port_2: Ports, status: LinkStatusChoices
+    panel_1: Device,
+    port_1: Ports,
+    panel_2: Device,
+    port_2: Ports,
+    status: LinkStatusChoices,
 ) -> str:
+    """NOTE: THIS IS DUPLICATED in devices.py create_modular_trunk() BECAUSE OF NETBOX IMPORT ISSUES
+
+    REMEMBER TO UPDATE BOTH.
+    """
+
     def next_cable_id() -> str:
         """Retrieve all modular trunk cables by Tag, and return the next label ID.
 
@@ -77,7 +95,7 @@ class CableRunner:
         rack_2_port: Ports,
         clr: str,
         status: LinkStatusChoices = LinkStatusChoices.STATUS_CONNECTED,
-        cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF_OS2,
+        cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF,
     ) -> None:
         self.rack_1 = rack_1_port.device.rack
         self.rack_1_port = rack_1_port
@@ -91,7 +109,7 @@ class CableRunner:
         port_2: Ports,
         clr: str,
         status: LinkStatusChoices = LinkStatusChoices.STATUS_CONNECTED,
-        cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF_OS2,
+        cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF,
         length: int = 0,
         return_log: bool = False,
     ) -> Cable | str:
@@ -129,16 +147,24 @@ class CableRunner:
     def _find_free_local_ports(self) -> None:
         """Get all free modular panel ports for each rack."""
         self.rack_1_free_modular_ports = list(
-            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_1, cable=None)
+            FrontPort.objects.filter(
+                device__role=PANEL_ROLE,
+                device__rack=self.rack_1,
+                cable=None,
+            )
         )
         self.rack_2_free_modular_ports = list(
-            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_2, cable=None)
+            FrontPort.objects.filter(
+                device__role=PANEL_ROLE,
+                device__rack=self.rack_2,
+                cable=None,
+            )
         )
         if not all((self.rack_1_free_modular_ports, self.rack_1_free_modular_ports)):
             raise AbortScript("No free modular panel ports found between the selected racks.")
 
     @staticmethod
-    def _validate_free_ports(ports: list[FrontPort]) -> list[FrontPort]:
+    def validate_free_ports(ports: list[FrontPort]) -> list[FrontPort]:
         """Validate all locally free ports are also free on the remote side.
 
         - Find the remote_panel, if ValueError, then the two panels are not cabled
@@ -150,13 +176,20 @@ class CableRunner:
         valid_ports = []
         for port in ports:
             try:
-                remote_panel = port.rear_port.link_peers[0].device
-            except ValueError:  # rear_port not connected
+                remote_port = port.rear_port.link_peers[0]  # multi-termination, only one should be connected
+                remote_panel = remote_port.device
+                if "smf" not in remote_port.cable.type:  # script only for SMF
+                    raise ValueError
+            except (ValueError, IndexError):  # rear_port not connected
                 continue
 
-            remote_port = FrontPort.objects.get(device=remote_panel, rear_port_position=port.rear_port_position)
-            if not remote_port.cable:
-                valid_ports.append([port, remote_port])
+            remote_front_port = FrontPort.objects.get(
+                device=remote_panel,
+                rear_port_position=port.rear_port_position,
+                rear_port=remote_port,
+            )
+            if not remote_front_port.cable:
+                valid_ports.append([port, remote_front_port])
 
         if not valid_ports:
             raise AbortScript("No valid modular ports found.")
@@ -191,7 +224,7 @@ class CableRunner:
                 return None
 
         self._find_free_local_ports()
-        rack_1_panel_ports = self._validate_free_ports(self.rack_1_free_modular_ports)
+        rack_1_panel_ports = self.validate_free_ports(self.rack_1_free_modular_ports)
         direct_ports = filter_ports_direct_connect(rack_1_panel_ports)
 
         # SPK-SPK or SPK-HUB
@@ -204,7 +237,7 @@ class CableRunner:
         # SPK-HUB-SPK
         else:
             rack_1_panel_ports = rack_1_panel_ports[0]
-            rack_2_panel_ports = self._validate_free_ports(self.rack_2_free_modular_ports)[0]
+            rack_2_panel_ports = self.validate_free_ports(self.rack_2_free_modular_ports)[0]
             self.connections = [
                 [self.rack_1_port, rack_1_panel_ports[0]],
                 [rack_1_panel_ports[1], rack_2_panel_ports[1]],
@@ -222,13 +255,13 @@ class CableRunner:
 
 class NewJumper(Script):
     class Meta:
-        name = "New Jumpers"
+        name = "New SMF Jumpers"
         description = (
             "Create new cabling between two endpoints within one rack, or between two racks using modular paneling."
         )
         scheduling_enabled = False
         fieldsets = (
-            ("Cable Data", ("site", "status", "clr", "cable_type")),
+            ("Cable Data", ("site", "status", "clr")),
             ("A Side", ("a_device", "a_interface", "a_frontport", "a_rearport")),
             ("Z Side", ("z_device", "z_interface", "z_frontport", "z_rearport")),
         )
@@ -256,9 +289,12 @@ class NewJumper(Script):
     z_frontport = ObjectVar(model=FrontPort, label="FrontPort|Optical", **z_dev_common)
     z_rearport = ObjectVar(model=RearPort, label="RearPort/Optical Trunk", **z_dev_common)
 
-    status = ChoiceVar(label="Cable Status", choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED)
-    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.")
-    cable_type = ChoiceVar(label="Cable Type", choices=CableTypeChoices, default=CableTypeChoices.TYPE_SMF_OS2)
+    status = ChoiceVar(
+        label="Cable Status",
+        choices=LinkStatusChoices,
+        default=LinkStatusChoices.STATUS_CONNECTED,
+    )
+    clr = StringVar(label="CLR", description="Value should match `CLR-XXXX` or `nonprod STRING`.", default="CLR-")
 
     def run(self, data, commit):
         def check_port_selections(data: dict) -> tuple[Ports, Ports]:
@@ -284,7 +320,6 @@ class NewJumper(Script):
                 rack_2_port,
                 data["clr"],
                 data["status"],
-                data["cable_type"],
                 return_log=True,
             )
             self.log_success(log_output)
@@ -296,7 +331,6 @@ class NewJumper(Script):
                 rack_2_port,
                 data["clr"],
                 data["status"],
-                data["cable_type"],
             )
             runner.get_connections()
             cables = runner.create_cables()
@@ -325,10 +359,17 @@ class CreatePanelTrunks(Script):
         query_params={"device_id": "$panel_1", "cabled": False},
     )
     length = IntegerVar(
-        label="Cable Length", description="Cable length, in meters", required=False, max_value=100, min_value=1
+        label="Cable Length",
+        description="Cable length, in meters",
+        required=False,
+        max_value=100,
+        min_value=1,
     )
     status = ChoiceVar(
-        label="Cable Status", required=False, choices=LinkStatusChoices, default=LinkStatusChoices.STATUS_CONNECTED
+        label="Cable Status",
+        required=False,
+        choices=LinkStatusChoices,
+        default=LinkStatusChoices.STATUS_CONNECTED,
     )
 
     def run(self, data, commit):
@@ -352,7 +393,15 @@ class NewCrossConnect(Script):
         fieldsets = (
             (
                 "Cross Connect",
-                ("provider", "circuit_id", "circuit_billing", "tenant", "ticket", "description", "status"),
+                (
+                    "provider",
+                    "circuit_id",
+                    "circuit_billing",
+                    "tenant",
+                    "ticket",
+                    "description",
+                    "status",
+                ),
             ),
             ("Panel Termination", ("site", "xconnect_panel", "xcpanel_port", "clr")),
         )
@@ -368,10 +417,14 @@ class NewCrossConnect(Script):
     circuit_billing = StringVar(label="Billing/Order ID", required=False)
     description = StringVar(label="Description")
     xconnect_panel = ObjectVar(
-        label="Cross Connect Panel", model=Device, query_params={"site_id": "$site", "role": XCONNECT_ROLE}
+        label="Cross Connect Panel",
+        model=Device,
+        query_params={"site_id": "$site", "role": XCONNECT_ROLE},
     )
     xcpanel_port = ObjectVar(
-        label="Cross Connect Rear Port", model=RearPort, query_params={"device_id": "$xconnect_panel", "cabled": False}
+        label="Cross Connect Rear Port",
+        model=RearPort,
+        query_params={"device_id": "$xconnect_panel", "cabled": False},
     )
 
     def run(self, data, commit):

@@ -1,10 +1,13 @@
 # VERSION: 1.0
 # temp until NB can access GitLab
 
+from __future__ import annotations
+
 from typing import Final
 
-from dcim.choices import DeviceStatusChoices, LinkStatusChoices
-from dcim.models import Device, DeviceRole, DeviceType, Module, ModuleBay, ModuleType, Rack, RearPort, Site
+from dcim.choices import CableTypeChoices, DeviceStatusChoices, LinkStatusChoices
+from dcim.models import Cable, Device, DeviceRole, DeviceType, Module, ModuleBay, ModuleType, Rack, RearPort, Site
+from extras.models import Tag
 from extras.scripts import (
     BooleanVar,
     ChoiceVar,
@@ -16,8 +19,6 @@ from extras.scripts import (
 )
 from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
-
-from scripts.jumpers import create_modular_trunk
 
 """
 Customization fields required:
@@ -79,6 +80,46 @@ def get_increment(hostname: str) -> str:
     else:
         last_increment = device_list.last().name.split("-")[-1]
         return str(int(last_increment) + 1).rjust(2, "0")  # ensure a two-digit string
+
+
+def create_modular_trunk(
+    panel_1: Device,
+    port_1: Ports,
+    panel_2: Device,
+    port_2: Ports,
+    status: LinkStatusChoices,
+) -> str:
+    """NOTE: THIS IS DUPLICATED FROM jumpers.py create_modular_trunk() BECAUSE OF NETBOX IMPORT ISSUES
+
+    REMEMBER TO UPDATE BOTH.
+    """
+
+    def next_cable_id() -> str:
+        """Retrieve all modular trunk cables by Tag, and return the next label ID.
+
+        All modular trunk cables are expected to be tagged with the modular-trunk tag. All labels
+        matching this tag are retrieved and sorted, then the next ID is returned using rjust.
+        """
+        tag_id: Final = Tag.objects.get(slug="modular-trunk").id
+        cables = Cable.objects.filter(tags=tag_id)
+        try:
+            last_cable_label = sorted([i.label.split("--")[-1] for i in cables])[-1]
+        except IndexError:
+            return "C0001"
+        else:
+            last_id = last_cable_label[1:]
+            return "C" + str(int(last_id) + 1).rjust(4, "0")
+
+    cable_id = next_cable_id()
+    cable = Cable(
+        type=CableTypeChoices.TYPE_SMF,
+        a_terminations=[port_1],
+        b_terminations=[port_2],
+        status=status,
+        label=f"COM--{panel_1}--{panel_2}--{cable_id}",
+    )
+    wrap_save(cable)
+    return cable
 
 
 class NewDevice(Script):
@@ -242,7 +283,7 @@ class NewDevice(Script):
             # fmt: off
             f"""Created new device {device.name} with the following attributes:
                 **Site**: `{device.site.name}`
-                **Rack**: `{device.rack.name}`
+                **Rack**: `{device.rack.name}`  
                 **Device Type**: `{device.device_type.model}`
                 **Device Role**: `{device.device_role.name}`
                 **Tenant**: `{device.tenant.name}`
@@ -255,7 +296,7 @@ class NewDevice(Script):
 class CreatePanels(Script):
     class Meta:
         name = "New Modular Panels"
-        description = "Create pair of FHD panels (no cassettes)"
+        description = "Create pair of FHD panels"
         scheduling_enabled = False
         fieldsets = (
             ("Installation", ("site", "status", "ticket")),

@@ -1,9 +1,12 @@
 # VERSION: 1.0
 # temp until NB can access GitLab
 
+import hashlib
+
 import netaddr
-from dcim.models import Device, Interface
+from dcim.models import Device, DeviceRole, Interface
 from extras.scripts import BooleanVar, ChoiceVar, IPAddressWithMaskVar, IntegerVar, ObjectVar, Script
+from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
 
 name = "Misc. Scripts"
@@ -13,11 +16,17 @@ def make_choices(choices: list[str]) -> tuple[tuple[str, str]]:
     return tuple((i, i) for i in choices)
 
 
+def filter_devices():
+    roles_names = ["Backbone Router", "Backbone Switch", "CPE Router"]
+    roles = DeviceRole.objects.filter(name__in=roles_names)
+    return [i.id for i in roles]
+
+
 class V4toV6(Script):
     class Meta:
         name = "IPv4 to IPv6 Converter"
         description = "Convert 137.164.0.0/16 IPv4 addresses to an IPv6 address."
-        read_only = True
+        commit_default = False
         scheduling_enabled = False
 
     v4 = IPAddressWithMaskVar(
@@ -78,15 +87,19 @@ class InterfaceTag(Script):
     class Meta:
         name = "Interface Tag Generator"
         description = "Generate an interface tag for a given port."
-        read_only = True
+        commit_default = False
         scheduling_enabled = False
         fieldsets = (
             ("Devices", ("device", "subinterface", "remote_device", "remote_interface", "remote_logical", "handoff")),
             ("Services", ("speed", "clr", "network", "service")),
+            ("Other", ("segment",)),
         )
 
-    device = ObjectVar(model=Device)
-    subinterface = BooleanVar()
+    valid_roles = filter_devices()
+    device = ObjectVar(model=Device, query_params={"role_id": valid_roles})
+    subinterface = BooleanVar(
+        label="Logical Unit", default=True, description="Uncheck if Cisco and not using a subinterface."
+    )
 
     remote_device = ObjectVar(model=Device, description="Required if not a handoff", required=False)
     remote_interface = ObjectVar(
@@ -106,6 +119,9 @@ class InterfaceTag(Script):
     speed = ChoiceVar(choices=make_choices(SPEED_CHOICES))
     network = ChoiceVar(choices=make_choices(NETWORK_CHOICES), default="dc")
     service = ChoiceVar(choices=make_choices(SERVICE_CHOICES))
+
+    msg = "Segment defaults to the segment of the Device. This is only required if the Device's segment needs to be overridden, ex: Handoff on a BB Device."
+    segment = ObjectVar(model=Tenant, required=False, description=msg)
 
     def run(self, data, commit):
         def make_description(data: dict[str, str], site_code: str) -> str:
@@ -146,7 +162,7 @@ class InterfaceTag(Script):
                     return port_tags + dms + edge_tags, None
 
                 case _:
-                    raise ValueError("Undefined tags")
+                    raise AbortScript("Tags not defined for this configuration.")
 
         def make_infra_tag(
             data: dict[str, str], net: str, port_tag: str | None = None
@@ -166,7 +182,7 @@ class InterfaceTag(Script):
                     return port_tag, None
 
                 case _:
-                    raise ValueError("Undefined tags")
+                    raise AbortScript("Tags not defined for this configuration.")
 
         def make_interconnect_tags(
             data: dict[str, str], net: str, site_code: str, local_role: str, remote_role: str
@@ -179,7 +195,7 @@ class InterfaceTag(Script):
                 # Backbone to CPE
                 case ("Router", "Router") if cpe:
                     return make_infra_tag(data, net)
-                case ("Switch", "Router") if cpe:
+                case ("Router", "Switch") if cpe:
                     return f"[{net}:core][{net}:l2acc]", None
 
                 # Backbone to Backbone
@@ -197,7 +213,7 @@ class InterfaceTag(Script):
                     return port_tag + f"[{net}:l2icl]", None
 
                 case _:
-                    raise ValueError("Undefined tags")
+                    raise AbortScript("Tags not defined for this configuration.")
 
         def make_tags(
             data: dict[str, str],
@@ -224,14 +240,23 @@ class InterfaceTag(Script):
                 raise AbortScript("Must select one of Handoff or Remote Device.")
             if not data.get("handoff") and not data.get("clr"):
                 raise AbortScript("Must enter a CLR for a non-Handoff connection.")
+            if data.get("subinterface") and "Switch" in data["device"].role.name:
+                raise AbortScript("Cannot have a logical unit defined for a Switch role local device.")
 
         test_values(data)
 
         net = data["network"].lower()
         site_code = data["device"].site.name.lower()
-        local_tenant = data["device"].tenant.name.lower()
         local_role = data["device"].role.name
-        remote_role = data["remote_device"].role.name
+
+        if data["segment"]:
+            local_tenant = data["segment"].name.lower()
+        else:
+            local_tenant = data["device"].tenant.name.lower()
+        if data["remote_device"]:
+            remote_role = data["remote_device"].role.name
+        else:
+            remote_role = None
 
         port_desc, subint_desc = make_tags(
             data, net, site_code, local_role=local_role, remote_role=remote_role, local_tenant=local_tenant
@@ -245,3 +270,31 @@ class InterfaceTag(Script):
             """
         )
         # fmt: on
+
+
+class MD5Gen(Script):
+    """The MD5 hash algorith is the first 10 digits of '{{ CENIC ASN }}:{{ ASSOCIATE ASN }}\n'
+    Note that the '\n' added to the algorithm is being maintained for legacy reasons.
+    """
+
+    class Meta:
+        name = "BGP Password Generator"
+        description = "Generate CalREN BGP password via an MD5 hash"
+        commit_default = False
+        scheduling_enabled = False
+
+    CENIC_CHOICES = (
+        ("2152", "2152"),
+        ("2153", "2153"),
+    )
+    cenic_as = ChoiceVar(label="CENIC ASN", description="Select the CENIC ASN", choices=CENIC_CHOICES, default="2152")
+    their_as = IntegerVar(
+        label="Associate ASN", description="Input the Associate ASN", min_value=1, max_value=4294967295
+    )
+
+    def run(self, data, commit):
+        asn_string = f'{data["cenic_as"]}:{data["their_as"]}\n'
+        output = hashlib.md5(asn_string.encode()).hexdigest()[:10]
+
+        self.log_success(message=f"`MD5 hash: {output}`")
+        return output
