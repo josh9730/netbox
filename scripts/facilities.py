@@ -57,7 +57,7 @@ class NewPower(Script):
         def get_next_increment() -> int:
             """Create list of Feed #s, get max, add one to create the next Feed increment."""
             if rack_feeds:
-                list_feed_nums = [re.search("Feed \d", i.name).group().split(" ")[1] for i in rack_feeds]
+                list_feed_nums = [re.search(r"Feed \d", i.name).group().split(" ")[1] for i in rack_feeds]
                 return int(max(list_feed_nums)) + 1
             return 1
 
@@ -119,6 +119,7 @@ class NewSiteScript(Script):
         site = Site(
             name=data["site_code"],
             slug=slugify(data["site_code"]),
+            description=data["site_name"],
             status=SiteStatusChoices.STATUS_ACTIVE,
             physical_address=data["address"],
             shipping_address=data["shipping"],

@@ -160,7 +160,7 @@ class CableRunner:
                 cable=None,
             )
         )
-        if not all((self.rack_1_free_modular_ports, self.rack_1_free_modular_ports)):
+        if not all((self.rack_1_free_modular_ports, self.rack_2_free_modular_ports)):
             raise AbortScript("No free modular panel ports found between the selected racks.")
 
     @staticmethod
@@ -180,7 +180,7 @@ class CableRunner:
                 remote_panel = remote_port.device
                 if "smf" not in remote_port.cable.type:  # script only for SMF
                     raise ValueError
-            except (ValueError, IndexError):  # rear_port not connected
+            except (ValueError, IndexError):  # rear_port not connected or not-SMF
                 continue
 
             remote_front_port = FrontPort.objects.get(
@@ -346,6 +346,9 @@ class CreatePanelTrunks(Script):
         scheduling_enabled = False
 
     site = ObjectVar(label="Site Name", model=Site)
+    rack_1 = ObjectVar(
+        label="Rack", description="Select one of the racks", model=Rack, query_params={"site_id": "$site"}
+    )
     panel_1 = ObjectVar(
         label="Modular Panel",
         description="Select one of the paired panels",
@@ -503,11 +506,18 @@ class NewCrossConnect(Script):
 
         cable_type = panel_type(data["xconnect_panel"].device_type.slug.split("-")[-1])
 
+        # if panel_type is not an expected value (i.e. legacy panel) the cable_type cannot be determined
+        # assume SMF
+        if not cable_type:
+            cable_type = "smf"
+        elif cable_type.lower().split("-")[0] in ("smf", "mmf", "cat6"):
+            cable_type = "smf"
+
         _ = CableRunner.create_cable_single(
             data["xcpanel_port"],
             circuit_term,
             data["clr"],
-            data["status"],
+            "connected",
             cable_type,
         )
 

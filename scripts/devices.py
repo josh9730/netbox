@@ -5,8 +5,21 @@ from __future__ import annotations
 
 from typing import Final
 
-from dcim.choices import CableTypeChoices, DeviceStatusChoices, LinkStatusChoices
-from dcim.models import Cable, Device, DeviceRole, DeviceType, Module, ModuleBay, ModuleType, Rack, RearPort, Site
+from dcim.choices import CableTypeChoices, DeviceStatusChoices, InterfaceTypeChoices, LinkStatusChoices
+from dcim.models import (
+    Cable,
+    Device,
+    DeviceRole,
+    DeviceType,
+    FrontPort,
+    Interface,
+    Module,
+    ModuleBay,
+    ModuleType,
+    Rack,
+    RearPort,
+    Site,
+)
 from extras.models import Tag
 from extras.scripts import (
     BooleanVar,
@@ -122,6 +135,127 @@ def create_modular_trunk(
     return cable
 
 
+class NCS1010(Script):
+    class Meta:
+        name = "New NCS-1010 Optical Transport"
+        description = "Creates new NCS-1010s and passive shelves."
+        scheduling_enabled = False
+        fieldsets = (
+            ("Device", ("site", "rack", "ru", "device_type", "ticket", "status", "remote_site")),
+            ("Modules", ("brk_sa_ru", "md32_ru", "slot_0", "slot_1", "slot_2", "slot_3")),
+        )
+
+    site = ObjectVar(model=Site)
+    rack = ObjectVar(model=Rack, query_params={"site_id": "$site"})
+    ru = IntegerVar(label="Shelf Lowest RU", required=False, min_value=1, max_value=44)
+    ticket = StringVar(label="Deployment Ticket", regex="^((NOC)|(COR)|(SYS)|(NENG)|(DEP))-[0-9]{1,7}$")
+    status = ChoiceVar(label="Current Status", choices=DeviceStatusChoices)
+
+    TYPE_CHOICES = (("NCS-1010 OLT-C", "NCS-1010 OLT-C"),)
+    device_type = ChoiceVar(label="Shelf Type", choices=TYPE_CHOICES)
+    remote_site = ObjectVar(model=Site)
+
+    brk_sa_ru = IntegerVar(
+        label="BRK-SA Rack Unit",
+        description="If an BRK-SA is being installed, select the lowest RU.",
+        required=False,
+        min_value=1,
+        max_value=44,
+    )
+    md32_ru = IntegerVar(
+        label="MD32 Rack Unit",
+        description="If an MD32 is being installed, select the lowest RU.",
+        required=False,
+        min_value=1,
+        max_value=44,
+    )
+    MODULE_CHOICES = (("NCS1K-BRK-24", "NCS1K-BRK-24"), ("NCS1K-BRK-8", "NCS1K-BRK-8"))
+    slot_0 = ChoiceVar(label="BRK-SA Slot 0 Module", required=False, choices=MODULE_CHOICES)
+    slot_1 = ChoiceVar(label="BRK-SA Slot 1 Module", required=False, choices=MODULE_CHOICES)
+    slot_2 = ChoiceVar(label="BRK-SA Slot 2 Module", required=False, choices=MODULE_CHOICES)
+    slot_3 = ChoiceVar(label="BRK-SA Slot 3 Module", required=False, choices=MODULE_CHOICES)
+
+    def run(self, data, commit):
+        def make_device(hostname: str, rack_unit: int, device_type: str, device_role: str):
+            device = Device(
+                name=hostname,
+                site=data["site"],
+                rack=data["rack"],
+                position=rack_unit,
+                face="front",
+                device_type=DeviceType.objects.get(model=device_type),
+                device_role=DeviceRole.objects.get(name=device_role),
+                status=data["status"],
+                tenant=Tenant.objects.get(name="CENIC Backbone"),
+                custom_field_data={"deployment_ticket": data["ticket"]},
+            )
+            wrap_save(device)
+            return device
+
+        slots = (data["slot_0"], data["slot_1"], data["slot_2"], data["slot_3"])
+        if data["brk_sa_ru"]:
+            assert any(slots), "BRK-SA must have at least one module."
+
+        role = "oltc" if data["device_type"] == "NCS-1010 OLT-C" else "olta"
+        hostname = f"{data['site'].name.lower()}{role}-{data['remote_site'].name.lower()}-"
+        hostname += get_increment(hostname)
+
+        device = make_device(hostname, data["ru"], data["device_type"], "OLS Transport")
+        self.log_success(f"Created shelf: `{device.name}`.")
+
+        if data["device_type"] == "NCS-1010 OLT-C":
+            if data["brk_sa_ru"]:
+                dev_name = f"BRK-SA - {hostname}"
+                _ = make_device(dev_name, data["brk_sa_ru"], "NCS1K-BRK-SA", "OLS / DCI Misc. Equipment")
+                brk_sa = Device.objects.get(name=dev_name)  # fetching again prevents module loading issues
+                self.log_success(f"Created `{brk_sa.name}`.")
+
+                for i, slot in enumerate(slots):
+                    if slot:
+                        module = Module(
+                            device=brk_sa,
+                            module_bay=ModuleBay.objects.get(name=f"Slot {i}", device=brk_sa),
+                            module_type=ModuleType.objects.get(model=slot),
+                        )
+
+                        wrap_save(module)
+                        self.log_success(f"Added module to BRK-SA: {module.module_type.model}")
+
+                com_ports = RearPort.objects.filter(device=brk_sa)
+                com_to_ad_map = {"0": "A/D 4-11", "1": "A/D 12-19", "2": "A/D 20-27", "3": "A/D 28-33"}
+                for port in com_ports:
+                    slot = port.name.split()[1]
+                    cable = Cable(
+                        type=CableTypeChoices.TYPE_SMF,
+                        a_terminations=[FrontPort.objects.get(device=device, name=com_to_ad_map[slot])],
+                        b_terminations=[port],
+                        status="connected",
+                        label="BRK-SA",
+                    )
+                    wrap_save(cable)
+                    self.log_success(
+                        f"Created cable from BRK-SA `{cable.b_terminations[0].name}` to shelf port `{cable.a_terminations[0].name}`"
+                    )
+
+            if data["md32_ru"]:
+                dev_name = f"MD32 - {hostname}"
+                _ = make_device(dev_name, data["md32_ru"], "NCS1K-MD-320-C", "OLS / DCI Misc. Equipment")
+                md32 = Device.objects.get(name=dev_name)
+                self.log_success(f"Created `{md32.name}`.")
+
+                cable = Cable(
+                    type=CableTypeChoices.TYPE_SMF,
+                    a_terminations=[FrontPort.objects.get(device=device, name="A/D 2 Rx/Tx")],
+                    b_terminations=[RearPort.objects.get(device=md32, name="COM")],
+                    status="connected",
+                    label="MD32",
+                )
+                wrap_save(cable)
+                self.log_success(
+                    f"Created cable from MD-32 `{cable.b_terminations[0].name}` to shelf port `{cable.a_terminations[0].name}`"
+                )
+
+
 class NewDevice(Script):
     class Meta:
         name = "New Device"
@@ -213,7 +347,7 @@ class NewDevice(Script):
                     hostname += get_increment(hostname)
 
                 case "OLS":
-                    assert optical_route, "Optical devices must have an optical route defined."
+                    raise AbortScript("Please use the NCS1010-specific script.")
 
                 case "OLS_DCI_Misc":
                     assert optical_route, "Optical devices must have an optical route defined."
@@ -464,3 +598,50 @@ class NewXConnect(Script):
         )
         wrap_save(panel)
         self.log_success(f"Created cross connect panel `{panel}`.")
+
+
+class MakeBreakout(Script):
+    class Meta:
+        name = "Make Breakout"
+        description = "Convert existing QSFP28 port to QSFP+"
+        scheduling_enabled = False
+
+    device = ObjectVar(model=Device)
+    port = ObjectVar(model=Interface, query_params={"device_id": "$device"})
+
+    def run(self, data, commit):
+        port = data["port"]
+        device = data["device"]
+
+        tengig_name = None
+        tengig_ports = None
+
+        # add for each type of breakout
+        if port.name.startswith("et"):
+            tengig_name = f"xe-{port.name.split('-'):}"
+            tengig_ports = list(range(0, 4))
+
+        if not tengig_name:
+            raise AbortScript(f"Breakout port config undefined for {device.device_type.model}.")
+        if port.cable:
+            raise AbortScript(f"{port} is cabled, delete and re-run Script.")
+
+        port.mark_connected = True
+        port.type = InterfaceTypeChoices.TYPE_40GE_QSFP_PLUS
+        port.label = "Breakout"
+        port.description = "QSFP+ Breakout Port"
+        wrap_save(port)
+
+        interfaces = []
+        for i, j in enumerate(tengig_ports, start=1):
+            interface = Interface(
+                name=tengig_name + str(i),
+                device=device,
+                type=InterfaceTypeChoices.TYPE_OTHER,
+                description=f"MPO-LC Breakout, Cables {i}/{12 - i + 1}",
+                label=port.name,
+            )
+            wrap_save(interface)
+            interfaces.append(interface)
+
+        self.log_success(f"Created breakouts for {device.name} {port.name}.")

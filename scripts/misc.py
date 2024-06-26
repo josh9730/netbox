@@ -86,7 +86,7 @@ class V4toV6(Script):
 class InterfaceTag(Script):
     class Meta:
         name = "Interface Tag Generator"
-        description = "Generate an interface tag for a given port."
+        description = "Generate an interface tag for a given port. Tag is NOT pushed to the device."
         commit_default = False
         scheduling_enabled = False
         fieldsets = (
