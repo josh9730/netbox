@@ -618,7 +618,7 @@ class MakeBreakout(Script):
 
         # add for each type of breakout
         if port.name.startswith("et"):
-            tengig_name = f"xe-{port.name.split('-'):}"
+            tengig_name = f"xe-{port.name.split('-')[1]}:"
             tengig_ports = list(range(0, 4))
 
         if not tengig_name:
@@ -635,7 +635,7 @@ class MakeBreakout(Script):
         interfaces = []
         for i, j in enumerate(tengig_ports, start=1):
             interface = Interface(
-                name=tengig_name + str(i),
+                name=tengig_name + str(j),
                 device=device,
                 type=InterfaceTypeChoices.TYPE_OTHER,
                 description=f"MPO-LC Breakout, Cables {i}/{12 - i + 1}",
