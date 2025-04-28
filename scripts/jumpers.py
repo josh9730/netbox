@@ -8,6 +8,8 @@ from circuits.models import Circuit, CircuitTermination, CircuitType, Provider
 from dcim.choices import CableTypeChoices, LinkStatusChoices
 from dcim.models import (
     Cable,
+    ConsolePort,
+    ConsoleServerPort,
     Device,
     DeviceRole,
     FrontPort,
@@ -31,11 +33,13 @@ name = "Jumper Creations"
 
 Ports: TypeAlias = FrontPort | Interface | RearPort
 
-PANEL_ROLE: Final = DeviceRole.objects.get(slug="modular-panels")
-MODULAR_TAG: Final = "Modular Trunk"
-MODULAR_TAG_ID: Final = Tag.objects.get(slug="modular-trunk").id
-XCONNECT_ROLE: Final = "xconnect-panels"
-CROSS_CONNECT: Final = "Cross Connect"
+PANEL_ROLE: Final[DeviceRole] = DeviceRole.objects.get(slug="modular-panels")
+MODULAR_TAG: Final[str] = "Modular Trunk"
+MODULAR_TAG_ID: Final[int] = Tag.objects.get(slug="modular-trunk").id
+XCONNECT_ROLE: Final[str] = "xconnect-panels"
+CROSS_CONNECT: Final[str] = "Cross Connect"
+CPE_ROLES: Final[list[str]] = ["cpe-router", "cpe-switch", "dci-optical"]
+OOB_ROLE: Final[str] = ["cpe-oob"]
 
 
 def wrap_save(obj) -> None:
@@ -418,7 +422,7 @@ class NewCrossConnect(Script):
     tenant = ObjectVar(label="Segment", model=Tenant)
 
     circuit_billing = StringVar(label="Billing/Order ID", required=False)
-    description = StringVar(label="Description")
+    xc_description = StringVar(label="Description")
     xconnect_panel = ObjectVar(
         label="Cross Connect Panel",
         model=Device,
@@ -485,7 +489,7 @@ class NewCrossConnect(Script):
             provider=data["provider"],
             type=CircuitType.objects.get(name=CROSS_CONNECT),
             status=data["status"],
-            description=data["description"],
+            description=data["xc_description"],
             custom_field_data={
                 "circuit_ticket": data["ticket"],
                 "circuit_billing": data.get("circuit_billing"),
@@ -499,8 +503,8 @@ class NewCrossConnect(Script):
             term_side="A",
             site=data["site"],
             xconnect_id=data["circuit_id"],
-            pp_info=f'Panel: {data["xconnect_panel"]}, Port: {data["xcpanel_port"]}',
-            description=data["description"],
+            pp_info=f"Panel: {data['xconnect_panel']}, Port: {data['xcpanel_port']}",
+            description=data["xc_description"],
         )
         wrap_save(circuit_term)
 
@@ -524,3 +528,28 @@ class NewCrossConnect(Script):
         cage, rack_id = get_rack_info(data["xconnect_panel"].rack)
         xconn_log = xconnect_log(data, cage, rack_id, cable_type)
         self.log_success(xconn_log)
+
+
+class OOBConnect(Script):
+    class Meta:
+        name = "OOB Connect"
+        description = "Connect a CPE to an OOB device"
+        scheduling_enabled = False
+
+    site = ObjectVar(model=Site)
+    cpe = ObjectVar(model=Device, label="CPE", query_params={"site_id": "$site", "role": CPE_ROLES})
+    cpe_port = ObjectVar(model=ConsolePort, label="CPE Port", query_params={"device_id": "$cpe", "cabled": False})
+    oob = ObjectVar(model=Device, label="OOB", query_params={"site_id": "$site", "role": OOB_ROLE})
+    oob_port = ObjectVar(model=ConsoleServerPort, label="OOB Port", query_params={"device_id": "$oob", "cabled": False})
+    status = ChoiceVar(
+        label="Cable Status",
+        required=False,
+        choices=LinkStatusChoices,
+        default=LinkStatusChoices.STATUS_CONNECTED,
+    )
+
+    def run(self, data, commit):
+        cable_log = CableRunner.create_cable_single(
+            data["cpe_port"], data["oob_port"], "", data["status"], CableTypeChoices.TYPE_CAT6, return_log=True
+        )
+        self.log_success(cable_log)
