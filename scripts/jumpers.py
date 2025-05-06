@@ -406,7 +406,7 @@ class NewCrossConnect(Script):
                     "circuit_billing",
                     "tenant",
                     "ticket",
-                    "description",
+                    "xc_description",
                     "status",
                 ),
             ),
@@ -466,6 +466,8 @@ class NewCrossConnect(Script):
                     return "smf-os2"
                 case "om4":
                     return "mmf-om4"
+                case _:
+                    return ""
 
         def xconnect_log(data: dict, cage: str, rack_identifier: str, cable_type: str) -> str:
             # fmt: off

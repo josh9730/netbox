@@ -11,7 +11,7 @@ from extras.scripts import BooleanVar, ChoiceVar, IntegerVar, ObjectVar, Script,
 from tenancy.models import Tenant
 from utilities.exceptions import AbortScript
 
-name = "Facilicites"
+name = "Facilities"
 
 CPE_RACK_NAME: Final = "CPE_RACK"
 CPE_RACK_ROLE: Final = RackRole.objects.get(slug="associate")
