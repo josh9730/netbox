@@ -71,7 +71,7 @@ class CobberFreeForm(Script):
 
         def make_circuitterm(port: CircuitTermination, side: str) -> str:
             # fmt: off
-            return f"""**{side} Site**: `{port.site.name}
+            return f"""**{side} Site**: `{port.termination.name}
             **{side} Rack**: "NOT CENIC MANAGED"  
             **{side} Device**: "NOT CENIC MANAGED"  
             **{side} Port**: "NOT CENIC MANAGED"  

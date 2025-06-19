@@ -18,6 +18,7 @@ from dcim.models import (
     RearPort,
     Site,
 )
+from django.contrib.contenttypes.models import ContentType
 from extras.models import Tag
 from extras.scripts import ChoiceVar, IntegerVar, ObjectVar, Script, StringVar
 from tenancy.models import Tenant
@@ -39,7 +40,7 @@ MODULAR_TAG_ID: Final[int] = Tag.objects.get(slug="modular-trunk").id
 XCONNECT_ROLE: Final[str] = "xconnect-panels"
 CROSS_CONNECT: Final[str] = "Cross Connect"
 CPE_ROLES: Final[list[str]] = ["cpe-router", "cpe-switch", "dci-optical"]
-OOB_ROLE: Final[str] = ["cpe-oob"]
+OOB_ROLE: Final[list[str]] = ["cpe-oob"]
 
 
 def wrap_save(obj) -> None:
@@ -100,12 +101,15 @@ class CableRunner:
         clr: str,
         status: LinkStatusChoices = LinkStatusChoices.STATUS_CONNECTED,
         cable_type: CableTypeChoices = CableTypeChoices.TYPE_SMF,
+        script=None,
     ) -> None:
         self.rack_1 = rack_1_port.device.rack
         self.rack_1_port = rack_1_port
         self.rack_2 = rack_2_port.device.rack
         self.rack_2_port = rack_2_port
         self.data = {"clr": clr, "status": status, "cable_type": cable_type}
+
+        self.script = script
 
     @staticmethod
     def create_cable_single(
@@ -150,19 +154,12 @@ class CableRunner:
 
     def _find_free_local_ports(self) -> None:
         """Get all free modular panel ports for each rack."""
+        def_args = {"type__icontains": "lc", "cable": None}
         self.rack_1_free_modular_ports = list(
-            FrontPort.objects.filter(
-                device__role=PANEL_ROLE,
-                device__rack=self.rack_1,
-                cable=None,
-            )
+            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_1, **def_args)
         )
         self.rack_2_free_modular_ports = list(
-            FrontPort.objects.filter(
-                device__role=PANEL_ROLE,
-                device__rack=self.rack_2,
-                cable=None,
-            )
+            FrontPort.objects.filter(device__role=PANEL_ROLE, device__rack=self.rack_2, **def_args)
         )
         if not all((self.rack_1_free_modular_ports, self.rack_2_free_modular_ports)):
             raise AbortScript("No free modular panel ports found between the selected racks.")
@@ -335,6 +332,7 @@ class NewJumper(Script):
                 rack_2_port,
                 data["clr"],
                 data["status"],
+                script=self,
             )
             runner.get_connections()
             cables = runner.create_cables()
@@ -502,8 +500,9 @@ class NewCrossConnect(Script):
 
         circuit_term = CircuitTermination(
             circuit=circuit,
+            termination_type=ContentType.objects.get_for_model(Site),
+            termination=data["site"],
             term_side="A",
-            site=data["site"],
             xconnect_id=data["circuit_id"],
             pp_info=f"Panel: {data['xconnect_panel']}, Port: {data['xcpanel_port']}",
             description=data["xc_description"],
