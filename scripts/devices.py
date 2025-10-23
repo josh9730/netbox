@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from typing import Final
 
-from dcim.choices import CableTypeChoices, DeviceStatusChoices, InterfaceTypeChoices, LinkStatusChoices
+from dcim.choices import (
+    CableTypeChoices,
+    DeviceStatusChoices,
+    InterfaceTypeChoices,
+    LinkStatusChoices,
+)
 from dcim.models import (
     Cable,
     Device,
@@ -218,7 +223,7 @@ class NewDevice(Script):
                     if ("CENIC" in tenant) and (device_class == "Switch"):
                         role_name += "sw-"
                     hostname += role_name
-                    hostname += get_increment(hostname)
+                    hostname += get_increment(hostname) + ".cenic.net"
 
                 case "DCI":
                     assert optical_route, "Optical devices must have an optical route defined."
@@ -227,7 +232,7 @@ class NewDevice(Script):
                     if tenant == "PacWave CENIC":
                         role_name += "pw-"
                     hostname += f"-{optical_route}-{role_name}"
-                    hostname += get_increment(hostname)
+                    hostname += get_increment(hostname) + ".cenic.net"
 
                 case "OLS":
                     raise AbortScript("Please use the NCS1010-specific script.")
@@ -253,7 +258,7 @@ class NewDevice(Script):
                     assert tenant == "CENIC Enterprise", "Terminal Servers belong to the CENIC Enterprise tenant."
                     role = "Terminal Server"
                     hostname += "-ts-"
-                    hostname += get_increment(hostname)
+                    hostname += get_increment(hostname) + ".cenic.net"
 
                 case "OOB":
                     msg = "OOBs must have an Associate tenant"
