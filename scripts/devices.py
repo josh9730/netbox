@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, TypeAlias
 
 from dcim.choices import (
     CableTypeChoices,
@@ -16,6 +16,7 @@ from dcim.models import (
     Device,
     DeviceRole,
     DeviceType,
+    FrontPort,
     Interface,
     Module,
     ModuleBay,
@@ -48,6 +49,8 @@ Notes:
  - Hostnames that are expected to be used in A/AAAA records are all lowercase
  - Hostnames that are not in DNS are all uppercase
 """
+
+Ports: TypeAlias = FrontPort | Interface | RearPort
 
 name = "Devices"
 
@@ -90,12 +93,13 @@ def non_panel_types() -> list[DeviceType]:
     return list(DeviceType.objects.exclude(custom_field_data__contains={"device_class": "Panels"}))
 
 
-def get_increment(hostname: str) -> str:
+def get_increment(hostname: str, site: Site) -> str:
     """Return next increment for device name, i.e. alacc-cpe-02."""
-    if not (device_list := Device.objects.filter(name__contains=hostname)):
+    if not (device_list := Device.objects.filter(name__startswith=hostname, site=site.id)):
         return "01"
     else:
-        last_increment = device_list.last().name.split("-")[-1]
+        last_device = device_list.last().name.replace(".cenic.net", "")
+        last_increment = last_device.split("-")[-1]
         return str(int(last_increment) + 1).rjust(2, "0")  # ensure a two-digit string
 
 
@@ -222,8 +226,8 @@ class NewDevice(Script):
 
                     if ("CENIC" in tenant) and (device_class == "Switch"):
                         role_name += "-sw-"
-
-                    hostname += role_name + str(get_increment(hostname)) + ".cenic.net"
+                    increment = get_increment(hostname, data["site"])
+                    hostname = f"{hostname}{role_name}{increment}.cenic.net"
 
                 case "DCI":
                     assert optical_route, "Optical devices must have an optical route defined."
@@ -231,7 +235,9 @@ class NewDevice(Script):
                     role_name = "-dci-"
                     if tenant == "PacWave CENIC":
                         role_name += "-pw-"
-                    hostname += f"-{optical_route}-{role_name}" + str(get_increment(hostname)) + ".cenic.net"
+                    increment = get_increment(hostname, data["site"])
+                    hostname = f"{hostname}-{optical_route}{role_name}{increment}.cenic.net"
+                    
 
                 case "OLS":
                     raise AbortScript("Please use the NCS1010-specific script.")
@@ -256,14 +262,15 @@ class NewDevice(Script):
                 case "Terminal Server":
                     assert tenant == "CENIC Enterprise", "Terminal Servers belong to the CENIC Enterprise tenant."
                     role = "Terminal Server"
-                    hostname += "-ts-" + str(get_increment(hostname)) + ".cenic.net"
+                    increment = get_increment(hostname, data["site"])
+                    hostname = f"{hostname}-ts-{increment}.cenic.net"
 
                 case "OOB":
                     msg = "OOBs must have an Associate tenant"
                     assert all(x != tenant for x in ("CENIC Enterprise", "CENIC Backbone", "CENIC Hubsite")), msg
                     role = "CPE OOB"
                     hostname += "-oob-"
-                    hostname += get_increment(hostname)
+                    hostname += get_increment(hostname, data["site"])
 
                 case "Server":
                     assert (tenant == "CENIC Enterprise") or (
@@ -499,8 +506,8 @@ class MakeBreakout(Script):
         port = data["port"]
         device = data["device"]
 
-        tengig_name = None
-        tengig_ports = None
+        tengig_name = ""
+        tengig_ports = []
 
         # add for each type of breakout
         if port.name.startswith("et"):
