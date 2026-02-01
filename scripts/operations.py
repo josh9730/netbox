@@ -1,6 +1,14 @@
 from circuits.models import CircuitTermination
 from dcim.choices import DeviceStatusChoices, LinkStatusChoices
-from dcim.models import Cable, CablePath, Device, DeviceRole, FrontPort, Interface, RearPort
+from dcim.models import (
+    Cable,
+    CablePath,
+    Device,
+    DeviceRole,
+    FrontPort,
+    Interface,
+    RearPort,
+)
 from extras.scripts import BooleanVar, ChoiceVar, IntegerVar, ObjectVar, Script
 
 
@@ -113,22 +121,26 @@ class CircuitReadiness(Script):
 
     def run(self, data, commit) -> None:
         cables = list(Cable.objects.filter(label__regex=rf'.*(CLR-{data["clr"]})\D*'))
-        for cable in cables:
-            old_status = cable.status
-            cable.status = data["status"]
-            wrap_save(cable)
 
-            cable_output = ""
-            for i, port in enumerate((cable.a_terminations[0], cable.b_terminations[0])):
-                side = "A" if i == 0 else "Z"
-                if isinstance(port, CircuitTermination):
-                    cable_output += f"""**XConnect ID**: `{port.circuit.cid}`\n"""
-                else:
-                    cable_output += f"""**Device {side}**: `{port.device.name}`  
-                    **Port {side}**: `{port.name}`  
-                    """
-            self.log_success(cable_output)
-        self.log_success(f"Updated all cables from `{old_status}` to `{data['status']}`.")
+        try:
+            for cable in cables:
+                old_status = cable.status
+                cable.status = data["status"]
+                wrap_save(cable)
+
+                cable_output = ""
+                for i, port in enumerate((cable.a_terminations[0], cable.b_terminations[0])):
+                    side = "A" if i == 0 else "Z"
+                    if isinstance(port, CircuitTermination):
+                        cable_output += f"""**XConnect ID**: `{port.circuit.cid}`\n"""
+                    else:
+                        cable_output += f"""**Device {side}**: `{port.device.name}`  
+                        **Port {side}**: `{port.name}`  
+                        """
+                self.log_success(cable_output)
+            self.log_success(f"Updated all cables from `{old_status}` to `{data['status']}`.")
+        except Exception as _:
+            self.log_failure(f"CLR {data["clr"]} is not found in Netbox!")
 
 
 class DeviceReadiness(Script):
